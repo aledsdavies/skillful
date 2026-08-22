@@ -24,6 +24,7 @@ import { formatText, type HarnessId } from "./mod.ts";
 import { discoverProject, initProject } from "./project.ts";
 import { renderProject } from "./render.ts";
 import { renderSkillTopic, resolveSkillTopic, skillTree } from "./skills.ts";
+import { skillfulVersion } from "./version.ts";
 import { resolveSetup } from "./setup.ts";
 
 function collect(value: string, previous: string[] = []) {
@@ -124,6 +125,7 @@ export function createProgram() {
   const program = new Command()
     .name("skillful")
     .description("Author agent skills once, render them per harness.")
+    .version(skillfulVersion(), "-V, --version", "print version")
     .addHelpText("after", ROOT_AFTER_HELP)
     .helpCommand(false)
     .allowExcessArguments(false)

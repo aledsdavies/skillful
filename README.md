@@ -65,25 +65,20 @@ stays in `skillful --help` and `skillful skills tree`.
 ```nix
 project = inputs.skillful.lib.mkProject {
   inherit pkgs;
-  src = ./.;
+  source = self;
   projectDir = "agent";
-  dependencyOverrides.shared = pkgs.shared-skills;
-  extraRoots.skills = [ { origin = "workstation"; src = ./host-skills; } ];
+  dependencyOverrides.shared = inputs.shared-skills;
+  extraRoots.skills = [ { origin = "workstation"; source = ./host-skills; } ];
 };
 
-packages.${system} = {
-  default = project.rendered;
-  skillful = project.cli;
-};
-
+packages.${system}.default = project.rendered;
 checks.${system} = project.checks;
 
 pi = project.forHarness "pi";
-# pi = { installPaths; skills; commands; rules; }
+# pi = { paths; skills; commands; rules; }
 
 personal = project.forSetup "personal";
-workMac = project.forSetup "work-mac";
-# setup = { name; root; harnesses; rendered; outputs; files; }
+# personal = { name; root; selection; rendered; harnesses; files; }
 ```
 
 A Home Manager configuration can consume a home-root setup without restating its
@@ -98,30 +93,29 @@ home.file = pkgs.lib.mapAttrs (_: file: {
 ```sh
 nix build
 nix flake check
-nix run .#skillful -- update
-nix run .#skillful -- update angular
+skillful update
+skillful update angular-skills
+skillful --version
 ```
 
 `nix build` is the complete render. Each harness view is a path inside it.
 `project.forSetup` evaluates the named declaration directly from `skill.mod`, then
 builds only that setup through the same renderer. Its destination-keyed `files`
 map is ordinary Nix data; evaluation never runs the CLI or reads a derivation.
-`nix run .#skillful -- update` writes `skill.lock` through the Skillful CLI.
+Lock writes go through the Skillful CLI on your PATH.
 `nix flake update` does not move skill pins.
 
-`projectDir` selects the directory containing `skill.mod` within `src`. This lets
+`source` is the flake (`self`) or another flake input, already in the Nix store.
+`projectDir` selects the directory containing `skill.mod`. This lets
 `path:../shared/skills` dependencies use sibling trees from the same source
-workspace.
+workspace. Relative working-tree paths are rejected.
 
-`src` must be a source path or flake input, not a derivation, because setup
-declarations are read during evaluation. `dependencyOverrides` substitute a
-declared, locked remote while rendering; they never replace its fallback lock.
-`extraRoots` add named host content without editing `skill.mod`.
+`dependencyOverrides` substitute a declared, locked remote while rendering; they
+never replace its fallback lock. `extraRoots` add named host content without
+editing `skill.mod`.
 
-`project.cli` uses the working project discovered from the current directory for
-`fmt`, `add`, `fetch`, and `update`; pass `--project DIR` when working elsewhere.
-Understand and deliver commands use the pinned Nix project with its overrides and
-extra roots. This keeps lock maintenance writable without changing built renders.
+The public package is `inputs.skillful.packages.${system}.skillful`. That is the
+unwrapped CLI. Nix builds call the same engine with store paths.
 
 ## Development
 

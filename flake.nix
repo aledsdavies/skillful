@@ -8,6 +8,12 @@
       systems = [ "x86_64-linux" "aarch64-darwin" "x86_64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       mkProject = import ./nix/mkProject.nix { inherit self; };
+      revision = if self ? rev then builtins.substring 0 12 self.rev else self.dirtyShortRev or null;
+      skillfulPackage = pkgs: import ./nix/package.nix {
+        inherit pkgs revision;
+        src = self;
+        sourceHash = self.narHash;
+      };
     in
     {
       lib = { inherit mkProject; };
@@ -15,37 +21,38 @@
       packages = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
-          skillful = import ./nix/package.nix { inherit pkgs; src = self; };
+          skillful = skillfulPackage pkgs;
         in
         {
           inherit skillful;
           default = skillful;
         });
 
-      legacyPackages = forAllSystems (system:
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-        {
-          fixtureProject = mkProject { inherit pkgs; src = ./templates/basic; };
-        });
-
       checks = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
-          skillful = import ./nix/package.nix { inherit pkgs; src = self; };
+          skillful = skillfulPackage pkgs;
           bunDeps = import ./nix/bun-deps.nix { inherit pkgs; };
-          fixture = mkProject { inherit pkgs; src = ./templates/basic; };
+          packageVersion = (builtins.fromJSON (builtins.readFile ./package.json)).version;
+          versionLine = if revision == null then "skillful ${packageVersion} (source ${self.narHash})" else "skillful ${packageVersion} (rev ${revision}; source ${self.narHash})";
+          fixture = mkProject {
+            inherit pkgs;
+            source = self;
+            projectDir = "templates/basic";
+          };
           setupFixture = mkProject {
             inherit pkgs;
-            src = self;
+            source = self;
             projectDir = "tests/fixtures/setup-project";
           };
           derivationProject = pkgs.runCommand "skillful-derivation-project" { } ''
             cp -r ${./templates/basic} "$out"
           '';
-          invalidDerivationOutputSource = builtins.tryEval (builtins.deepSeq ((mkProject { inherit pkgs; src = derivationProject.outPath; }).setups) true);
-          invalidDerivationSource = builtins.tryEval (builtins.deepSeq ((mkProject { inherit pkgs; src = derivationProject; }).setups) true);
+          invalidDerivationOutputSource = builtins.tryEval (mkProject { inherit pkgs; source = derivationProject.outPath; });
+          invalidDerivationSource = builtins.tryEval (mkProject { inherit pkgs; source = derivationProject; });
+          invalidProjectDir = builtins.tryEval (mkProject { inherit pkgs; source = self; projectDir = "../secret"; });
+          invalidNoncanonicalProjectDir = builtins.tryEval (mkProject { inherit pkgs; source = self; projectDir = "./templates/basic"; });
+          invalidMissingMod = builtins.tryEval (mkProject { inherit pkgs; source = self; projectDir = "cli"; });
           personalSetup = setupFixture.forSetup "personal";
           workSetup = setupFixture.forSetup "work-mac";
           uppercaseSetup = setupFixture.forSetup "uppercase";
@@ -53,7 +60,7 @@
             schemaVersion = 1;
             setup = {
               inherit (setup) name root selection;
-              harnesses = map (name: { inherit name; paths = setup.installPaths.${name}; }) setup.harnesses;
+              harnesses = map (name: { inherit name; paths = setup.harnesses.${name}.paths; }) (builtins.attrNames setup.harnesses);
             };
           };
           consumeSetup = name: setup: pkgs.runCommand "skillful-${name}-destination-map" { } (''
@@ -79,10 +86,14 @@
           rootWideSetup = builtins.tryEval (builtins.deepSeq (setupFixture.forSetup "root-wide") true);
           unsupportedCommandSetup = builtins.tryEval (builtins.deepSeq (setupFixture.forSetup "unsupported-command") true);
           setupSourcesInsideRender = setup: builtins.all (file: pkgs.lib.hasPrefix "${setup.rendered}/" (toString file.source)) (builtins.attrValues setup.files);
-          lockedFixture = mkProject { inherit pkgs; src = ./tests/fixtures/locked-project; };
+          lockedFixture = mkProject {
+            inherit pkgs;
+            source = self;
+            projectDir = "tests/fixtures/locked-project";
+          };
           sourceMaintenanceFixture = mkProject {
             inherit pkgs;
-            src = ./tests/fixtures/source-maintenance-project;
+            source = self + "/tests/fixtures/source-maintenance-project";
             projectDir = "agent";
           };
           githubTree = builtins.fetchTree {
@@ -104,6 +115,8 @@
           standalone = pkgs.runCommandLocal "skillful-standalone-check" { } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
+            env -i HOME="$HOME" PATH=/nonexistent ${skillful}/bin/skillful --version > "$TMPDIR/version"
+            grep -Fx ${pkgs.lib.escapeShellArg versionLine} "$TMPDIR/version"
             env -i HOME="$HOME" PATH=/nonexistent ${skillful}/bin/skillful init --dir "$TMPDIR/project"
             env -i HOME="$HOME" PATH=/nonexistent ${skillful}/bin/skillful list harnesses --project "$TMPDIR/project" > "$TMPDIR/harnesses"
             env -i HOME="$HOME" PATH=/nonexistent ${skillful}/bin/skillful render --project "$TMPDIR/project" --out "$TMPDIR/rendered"
@@ -112,7 +125,7 @@
             touch "$out"
           '';
           source-maintenance = pkgs.runCommand "skillful-source-maintenance-check" {
-            nativeBuildInputs = [ sourceMaintenanceFixture.cli pkgs.gitMinimal pkgs.gnutar ];
+            nativeBuildInputs = [ skillful pkgs.gitMinimal pkgs.gnutar ];
           } ''
             export HOME="$TMPDIR/home"
             export XDG_CACHE_HOME="$TMPDIR/cache"
@@ -122,7 +135,6 @@
             test -f ${sourceMaintenanceFixture.rendered}/pi/skills/local/SKILL.md
             test -f ${(sourceMaintenanceFixture.forHarness "pi").skills}/agent-jj/SKILL.md
             test -f ${(sourceMaintenanceFixture.forHarness "pi").rules}
-            test -f ${sourceMaintenanceFixture.contract}/contract.json
 
             remote="$TMPDIR/remote"
             mkdir -p "$remote/angular/angular-skill" "$remote/browser/agent-browser"
@@ -170,7 +182,6 @@
             test -f ${(fixture.forHarness "pi").skills}/example/SKILL.md
             test -f ${(fixture.forHarness "pi").commands}/standalone.md
             test -f ${(fixture.forHarness "pi").rules}
-            test -f ${fixture.contract}/contract.json
             touch "$out"
           '';
           fixture-strict = fixture.checks.strict;
@@ -180,6 +191,9 @@
             assert !invalidRootHome.success;
             assert !invalidDerivationOutputSource.success;
             assert !invalidDerivationSource.success;
+            assert !invalidProjectDir.success;
+            assert !invalidMissingMod.success;
+            assert !invalidNoncanonicalProjectDir.success;
             assert !unknownSetup.success;
             assert !overlappingSetup.success;
             assert !nestedOverlappingSetup.success;
@@ -187,11 +201,11 @@
             assert !unsupportedCommandSetup.success;
             assert setupSourcesInsideRender personalSetup;
             assert setupSourcesInsideRender workSetup;
-            assert workSetup.installPaths.opencode.skills == ".opencode/skills";
-            assert workSetup.installPaths.opencode.commands == ".opencode/commands";
-            assert !(workSetup.installPaths.opencode ? rules);
+            assert workSetup.harnesses.opencode.paths.skills == ".opencode/skills";
+            assert workSetup.harnesses.opencode.paths.commands == ".opencode/commands";
+            assert !(workSetup.harnesses.opencode.paths ? rules);
             pkgs.runCommand "skillful-setup-projection-check" {
-              nativeBuildInputs = [ setupFixture.cli pkgs.jq pkgs.diffutils ];
+              nativeBuildInputs = [ skillful pkgs.jq pkgs.diffutils ];
               expectedSetups = builtins.toJSON {
                 personal = projectionFor personalSetup;
                 work-mac = projectionFor workSetup;
@@ -200,8 +214,8 @@
             } ''
               printf '%s\n' "$expectedSetups" > expected.json
               for name in personal work-mac uppercase; do
-                skillful setup show "$name" --format json \
-                  | jq -S '{ schemaVersion, setup: { name: .setup.name, root: .setup.root, selection: .setup.selection, harnesses: .setup.harnesses } }' \
+                skillful setup show "$name" --format json --project ${self}/tests/fixtures/setup-project \
+                  | jq -S '{ schemaVersion, setup: { name: .setup.name, root: .setup.root, selection: .setup.selection, harnesses: (.setup.harnesses | sort_by(.name)) } }' \
                   > "$name-cli.json"
                 jq -S --arg name "$name" '.[$name]' expected.json > "$name-nix.json"
                 diff -u "$name-nix.json" "$name-cli.json"
@@ -211,7 +225,7 @@
                 if skillful fmt --check --project "$project"; then exit 1; fi
               done
               for name in overlap nested-overlap root-wide; do
-                if skillful setup show "$name" --format json; then exit 1; fi
+                if skillful setup show "$name" --format json --project ${self}/tests/fixtures/setup-project; then exit 1; fi
               done
 
               test -f ${personalSetup.rendered}/pi/skills/example/SKILL.md

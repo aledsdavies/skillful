@@ -23,11 +23,19 @@ describe("project CLI", () => {
     expect(stdout).toContain("render [options]");
     expect(stdout).toContain("install [options]");
     expect(stdout.toLowerCase()).not.toContain("nix");
+    expect(stdout).toContain("--version");
 
     const formatHelp = run(temp(), "list", "--help");
     expect(formatHelp.exitCode).toBe(0);
     expect(output(formatHelp).stdout).toContain("default: text");
     expect(output(formatHelp).stdout).not.toContain('default: "text"');
+  });
+
+  test("prints the package version without discovering a project", () => {
+    const result = run(temp(), "--version");
+    expect(result.exitCode).toBe(0);
+    expect(output(result).stdout).toBe("skillful 0.1.0\n");
+    expect(output(result).stderr).toBe("");
   });
   test("no-args help orients without treating help as a usage error", () => {
     const result = run(temp());

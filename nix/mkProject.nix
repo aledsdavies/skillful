@@ -1,29 +1,54 @@
 { self }:
 {
   pkgs,
-  src,
+  source,
   projectDir ? ".",
   dependencyOverrides ? { },
   extraRoots ? { },
 }:
 
 let
-  sourceContext = builtins.attrValues (builtins.getContext (toString src));
-  hasDerivationContext = pkgs.lib.any (entry: entry ? outputs || entry ? allOutputs) sourceContext;
+  lib = pkgs.lib;
+  storePrefix = "${builtins.storeDir}/";
+  derivationSourceError = "skillful mkProject source must be a flake input or plain store path, not a derivation or derivation output";
+  sourceValue =
+    if lib.isDerivation source
+    then throw derivationSourceError
+    else if builtins.elem (builtins.typeOf source) [ "path" "string" ]
+    then source
+    else if source ? outPath
+    then source.outPath
+    else throw "skillful mkProject source must already be a flake input or store path; pass self and projectDir, not a relative working-tree path.";
+  sourceString = toString sourceValue;
+  sourceContext = builtins.attrValues (builtins.getContext sourceString);
+  hasDerivationContext = lib.any (entry: entry ? outputs || entry ? allOutputs) sourceContext;
+  storeBacked = lib.hasPrefix storePrefix sourceString;
+  checkedProjectDir =
+    if builtins.typeOf projectDir != "string"
+      || projectDir == ""
+      || lib.hasPrefix "/" projectDir
+      || lib.hasInfix "\\" projectDir
+      || (projectDir != "." && builtins.any (segment: builtins.elem segment [ "" "." ".." ]) (lib.splitString "/" projectDir))
+    then throw "skillful mkProject projectDir must be . or a normalized relative path such as agent"
+    else projectDir;
 in
-if pkgs.lib.isDerivation src || hasDerivationContext
-then throw "skillful mkProject src must be a source path or flake input, not a derivation"
+if hasDerivationContext
+then throw derivationSourceError
+else if !storeBacked
+then throw "skillful mkProject source must already be a flake input or store path; pass self and projectDir, not a relative working-tree path."
 else
 let
-  lib = pkgs.lib;
   engineCli = self.packages.${pkgs.stdenv.hostPlatform.system}.skillful;
   storePath = name: value:
     if builtins.typeOf value == "path"
     then builtins.path { path = value; name = "skillful-${name}"; }
     else value;
-  projectSource = storePath "project" src;
-  projectRoot = projectSource + "/${projectDir}";
-  declarationRoot = "${src}/${projectDir}";
+  projectSource = sourceValue;
+  projectRoot = if checkedProjectDir == "." then projectSource else projectSource + "/${checkedProjectDir}";
+  checkedProjectRoot =
+    if !(builtins.pathExists (projectRoot + "/skill.mod"))
+    then throw "skillful mkProject projectDir must contain skill.mod"
+    else projectRoot;
   harnessDir = ../harnesses;
   harnessFiles = builtins.attrNames (lib.filterAttrs (name: type: type == "regular" && lib.hasSuffix ".json" name) (builtins.readDir harnessDir));
   facts = builtins.listToAttrs (map (file:
@@ -32,24 +57,23 @@ let
       name = value.name;
       inherit value;
     }) harnessFiles);
-  harnesses = builtins.attrNames facts;
-  setupDeclarations = (import ./parseMod.nix { inherit lib facts; }) (declarationRoot + "/skill.mod");
+  knownHarnesses = builtins.attrNames facts;
+  setupDeclarations = (import ./parseMod.nix { inherit lib facts; }) (checkedProjectRoot + "/skill.mod");
   setupNames = builtins.attrNames setupDeclarations;
   pathConflict = left: right:
     left == "." || right == "." || left == right
     || lib.hasPrefix "${left}/" right
     || lib.hasPrefix "${right}/" left;
+  extraRootEntries = kind: field:
+    map (entry:
+      if !(entry ? origin) || entry.origin == "" || !(entry ? source)
+      then throw "skillful extra ${kind} roots require non-empty origin and source"
+      else entry) (extraRoots.${field} or [ ]);
   checkedExtraRoots = {
-    skills = map (entry:
-      if !(entry ? origin) || entry.origin == "" || !(entry ? src)
-      then throw "skillful extra skill roots require non-empty origin and src"
-      else entry) (extraRoots.skills or [ ]);
-    commands = map (entry:
-      if !(entry ? origin) || entry.origin == "" || !(entry ? src)
-      then throw "skillful extra command roots require non-empty origin and src"
-      else entry) (extraRoots.commands or [ ]);
+    skills = extraRootEntries "skill" "skills";
+    commands = extraRootEntries "command" "commands";
   };
-  lockPath = projectRoot + "/skill.lock";
+  lockPath = checkedProjectRoot + "/skill.lock";
   lockEntries =
     if !(builtins.pathExists lockPath)
     then [ ]
@@ -109,18 +133,19 @@ let
   resolvedOverrides = builtins.mapAttrs (name: path: storePath "dependency-${name}" path) (lockedOverrides // dependencyOverrides);
   overrideArgs = lib.concatLists (lib.mapAttrsToList (name: path: [ "--override" "${name}=${toString path}" ]) resolvedOverrides);
   normalizedExtraRoots = {
-    skills = map (entry: entry // { src = storePath "extra-skill-${entry.origin}" entry.src; }) checkedExtraRoots.skills;
-    commands = map (entry: entry // { src = storePath "extra-command-${entry.origin}" entry.src; }) checkedExtraRoots.commands;
+    skills = map (entry: entry // { source = storePath "extra-skill-${entry.origin}" entry.source; }) checkedExtraRoots.skills;
+    commands = map (entry: entry // { source = storePath "extra-command-${entry.origin}" entry.source; }) checkedExtraRoots.commands;
   };
-  extraArgs = lib.concatMap (entry: [ "--extra-skill-root" "${entry.origin}=${toString entry.src}" ]) normalizedExtraRoots.skills
-    ++ lib.concatMap (entry: [ "--extra-command-root" "${entry.origin}=${toString entry.src}" ]) normalizedExtraRoots.commands;
-  projectArgs = [ "--project" (toString projectRoot) "--source-root" (toString projectSource) ] ++ overrideArgs ++ extraArgs;
+  extraArgs = lib.concatMap (entry: [ "--extra-skill-root" "${entry.origin}=${toString entry.source}" ]) normalizedExtraRoots.skills
+    ++ lib.concatMap (entry: [ "--extra-command-root" "${entry.origin}=${toString entry.source}" ]) normalizedExtraRoots.commands;
+  projectArgs = [ "--project" (toString checkedProjectRoot) "--source-root" (toString projectSource) ] ++ overrideArgs ++ extraArgs;
   escapedProjectArgs = lib.escapeShellArgs projectArgs;
   renderTree = derivationName: renderArgs: pkgs.runCommand derivationName {
     nativeBuildInputs = [ engineCli ];
-    inherit projectSource projectRoot;
+    projectSource = toString projectSource;
+    projectRoot = toString checkedProjectRoot;
     dependencySources = builtins.attrValues resolvedOverrides;
-    extraRootSources = map (entry: entry.src) (normalizedExtraRoots.skills ++ normalizedExtraRoots.commands);
+    extraRootSources = map (entry: entry.source) (normalizedExtraRoots.skills ++ normalizedExtraRoots.commands);
   } ''
     export HOME="$TMPDIR/home"
     export XDG_CACHE_HOME="$TMPDIR/cache"
@@ -132,11 +157,11 @@ let
   rendered = renderTree "skillful-project-render" [ ];
   forHarness = name:
     if !(builtins.hasAttr name facts)
-    then throw "unknown skillful harness ${name}; known: ${lib.concatStringsSep ", " harnesses}"
+    then throw "unknown skillful harness ${name}; known: ${lib.concatStringsSep ", " knownHarnesses}"
     else
       let harnessRendered = renderTree "skillful-${name}-render" [ "--harness" name ];
       in {
-        installPaths = facts.${name}.installPaths.home;
+        paths = facts.${name}.installPaths.home;
         skills = "${harnessRendered}/${name}/skills";
         commands = "${harnessRendered}/${name}/commands";
         rules = "${harnessRendered}/${name}/rules.md";
@@ -170,10 +195,10 @@ let
           name = entry.destination;
           value = builtins.removeAttrs entry [ "destination" ];
         }) entries);
-        outputs = builtins.listToAttrs (map (harness: {
+        harnesses = builtins.listToAttrs (map (harness: {
           name = harness.name;
           value = {
-            installPaths = harness.paths;
+            paths = harness.paths;
             skills = "${setupRendered}/${harness.name}/skills";
             commands = "${setupRendered}/${harness.name}/commands";
             rules = "${setupRendered}/${harness.name}/rules.md";
@@ -184,44 +209,19 @@ let
       else if overlappingDestinations
       then throw "skillful setup ${name} has overlapping destinations"
       else {
-        inherit name outputs files;
+        inherit name files harnesses;
         root = setup.root;
         selection = setup.selection;
-        harnesses = map (harness: harness.name) resolvedHarnesses;
-        installPaths = builtins.listToAttrs (map (harness: { name = harness.name; value = harness.paths; }) resolvedHarnesses);
         rendered = setupRendered;
       };
-  cli = pkgs.writeShellApplication {
-    name = "skillful";
-    runtimeInputs = [ engineCli ];
-    text = ''
-      case "''${1-}" in
-        list|setup|inspect|check|diff|manifest|schema|render|install) exec ${engineCli}/bin/skillful "$@" ${escapedProjectArgs} ;;
-        *) exec ${engineCli}/bin/skillful "$@" ;;
-      esac
-    '';
-  };
-  contract = pkgs.runCommand "skillful-project-contract" {
-    nativeBuildInputs = [ engineCli pkgs.jq ];
-    inherit projectSource projectRoot;
-  } ''
-    export HOME="$TMPDIR/home"
-    export XDG_CACHE_HOME="$TMPDIR/cache"
-    export XDG_STATE_HOME="$TMPDIR/state"
-    mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$out"
-    skillful schema --format json ${escapedProjectArgs} > "$TMPDIR/schema.json"
-    skillful manifest --format json ${escapedProjectArgs} > "$TMPDIR/manifest.json"
-    jq -s '{ schemaVersion: 1, schema: .[0].schema, manifest: { setups: .[1].setups, harnesses: .[1].harnesses } }' "$TMPDIR/schema.json" "$TMPDIR/manifest.json" > "$out/contract.json"
-  '';
+
   checks = {
     render = rendered;
-    strict = pkgs.runCommand "skillful-project-strict-check" { nativeBuildInputs = [ cli ]; } ''
-      skillful check --strict --format json > "$out"
+    strict = pkgs.runCommand "skillful-project-strict-check" { nativeBuildInputs = [ engineCli ]; } ''
+      skillful check --strict --format json ${escapedProjectArgs} > "$out"
     '';
   };
 in
-{
-  inherit harnesses forHarness forSetup cli contract checks rendered;
-  setups = setupNames;
-  installPaths = builtins.mapAttrs (_: value: value.installPaths.home) facts;
+builtins.seq checkedProjectRoot {
+  inherit forHarness forSetup checks rendered;
 }

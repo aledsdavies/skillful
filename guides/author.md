@@ -15,7 +15,9 @@ invoke. A command needs no `SKILL.md`; a skill folder cannot hold a `COMMAND.md`
 command cannot share a skill's name. Codex and Cursor require Agent Skill names for
 skills and commands: at most 64 lowercase letters, numbers, and single hyphens.
 
-`$@` is the argument placeholder; the renderer translates it per harness.
+`$@` is the argument placeholder; the renderer translates it per harness. Markup inside a
+code span or code block is shown as written, so examples of fences, tokens, and `$@`
+need no escaping. A render error names the file and line it could not render.
 
 Harness-only lines use fences such as `{{#codex}}`, `{{#cursor}}`, `{{#grok}}`, and
 their inverted forms, closed by `{{/}}`. Tokens come from `skill.mod`. `skillful

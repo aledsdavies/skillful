@@ -199,14 +199,29 @@ function fenceTransforms(id: HarnessId, text: string): Transformations["fences"]
     return [{ kind: "fence" as const, mode: include ? "include" as const : "exclude" as const, targets, outcome: ((include && listed) || (!include && !listed)) ? "selected" as const : "omitted" as const }];
   });
 }
-export function applyBlocks(id: HarnessId, text: string) {
+// Code blocks and spans show markup as written, so examples of fences, tokens and $@ survive rendering.
+// Hiding it character-for-character keeps line numbers for error locations.
+const CODE = /^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$|`[^`\n]+`/gm;
+const HIDDEN_MARKUP: ReadonlyArray<readonly [string, string]> = [["{{", "\uE000"], ["}}", "\uE001"], ["$@", "\uE002"]];
+function hideCodeMarkup(text: string) {
+  return text.replace(CODE, (code) => HIDDEN_MARKUP.reduce((value, [markup, hidden]) => value.replaceAll(markup, hidden), code));
+}
+function showCodeMarkup(text: string) {
+  return HIDDEN_MARKUP.reduce((value, [markup, hidden]) => value.replaceAll(hidden, markup), text);
+}
+function lineOf(text: string, needle: string) {
+  const index = text.indexOf(needle);
+  return index < 0 ? 1 : text.slice(0, index).split("\n").length;
+}
+function applyBlocks(id: HarnessId, text: string, source: string) {
   const out: string[] = [];
   let active = true;
   let inBlock = false;
-  for (const line of text.split("\n")) {
+  for (const [index, line] of text.split("\n").entries()) {
+    const at = `${source}:${index + 1}`;
     const open = fenceMatch(line);
     if (open) {
-      if (inBlock) fail("nested renderer fences are not supported", "Close the current fence with {{/}} before opening another.");
+      if (inBlock) fail(`${at}: nested renderer fences are not supported`, "Close the current fence with {{/}} before opening another.");
       const targets = open[2]!.trim().split(/\s+/).map(canonicalHarness);
       const listed = targets.includes(id);
       active = open[1] === "#" ? listed : !listed;
@@ -214,25 +229,34 @@ export function applyBlocks(id: HarnessId, text: string) {
       continue;
     }
     if (/^\s*\{\{\/\}\}\s*$/.test(line)) {
-      if (!inBlock) fail("stray {{/}} renderer fence", "Remove the close marker or add its opening fence.");
+      if (!inBlock) fail(`${at}: stray {{/}} renderer fence`, "Remove the close marker or add its opening fence.");
       active = true;
       inBlock = false;
       continue;
     }
     if (active) out.push(line);
   }
-  if (inBlock) fail("unclosed {{#...}} or {{^...}} fence", "Add {{/}} on its own line.");
+  if (inBlock) fail(`${source}: unclosed {{#...}} or {{^...}} fence`, "Add {{/}} on its own line.");
   return out.join("\n");
 }
-function renderText(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, text: string) {
-  let rendered = applyBlocks(id, text);
+function renderText(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, text: string, source: string) {
+  const hidden = hideCodeMarkup(text);
+  let rendered = applyBlocks(id, hidden, source);
   for (const name of Object.keys(tokens).sort()) rendered = rendered.replaceAll(`{{${name}}}`, tokens[name]!);
   rendered = rendered.replaceAll("$@", facts.argSyntax);
   const leftover = rendered.match(/\{\{([A-Za-z0-9_.^#/ -]*)\}\}/s);
-  if (leftover) fail(`unresolved {{${leftover[1]}}} after rendering for ${id}`, `Define the token for ${id} or repair the fence. Known tokens: ${Object.keys(tokens).sort().join(", ") || "none"}.`);
-  return rendered;
+  if (leftover) {
+    const marker = `{{${leftover[1]}}}`;
+    const at = `${source}:${lineOf(hidden, marker)}`;
+    const asWritten = "or put it in a code span or code block to show it as written";
+    if (/^[#^/]/.test(leftover[1]!)) fail(`${at}: renderer fence ${marker} is not on a line of its own`, `Move the fence to its own line, ${asWritten}.`);
+    const known = Object.keys(tokens).sort().join(", ");
+    fail(`${at}: unknown token ${marker} for ${id}`, `Define it in skill.mod${known ? ` (known tokens: ${known})` : ""}, ${asWritten}.`);
+  }
+  return showCodeMarkup(rendered);
 }
-function transformations(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string): Transformations {
+function transformations(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, source: string): Transformations {
+  const raw = hideCodeMarkup(source);
   return {
     fences: fenceTransforms(id, raw),
     tokens: Object.keys(tokens).sort().filter((name) => raw.includes(`{{${name}}}`)).map((name) => ({ kind: "token-substituted", token: name, value: tokens[name]! })),
@@ -240,11 +264,11 @@ function transformations(id: HarnessId, facts: HarnessFacts, tokens: Record<stri
     command: [],
   };
 }
-function renderSkill(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string) {
-  return filterFrontmatter(renderText(id, facts, tokens, raw), facts.skillFrontmatter);
+function renderSkill(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string, source: string) {
+  return filterFrontmatter(renderText(id, facts, tokens, raw, source), facts.skillFrontmatter);
 }
-function renderCommand(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string) {
-  return filterFrontmatter(renderText(id, facts, tokens, raw), facts.commandFrontmatter);
+function renderCommand(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string, source: string) {
+  return filterFrontmatter(renderText(id, facts, tokens, raw, source), facts.commandFrontmatter);
 }
 function walkSupport(root: string, prefix = ""): string[] {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap((entry) => {
@@ -346,14 +370,14 @@ function buildHarness(project: Project, id: HarnessId, facts: HarnessFacts, inst
 
   const commands: CommandPlan[] = commandsAsSkills ? [] : selectedCommands.map((entry) => {
     const raw = readFileSync(join(entry.root, entry.name), "utf8");
-    const body = renderCommand(id, facts, tokens, raw);
+    const body = renderCommand(id, facts, tokens, raw, commandSource(entry).path!);
     return { name: entry.name, source: commandSource(entry), delivery: { kind: "file", path: `${commandRoot!}/${entry.name}` }, sha256: sha256(body), frontmatter: frontmatterPlan(raw, body), transformations: transformations(id, facts, tokens, raw), body };
   });
   uniqueByName(commands.map((command) => ({ name: command.name, origin: command.source.origin ?? command.source.kind })), `delivered command for ${id}`);
 
   const authoredSkills: SkillPlan[] = selectedEntries.map((entry) => {
     const raw = readFileSync(join(entry.root, entry.name, "SKILL.md"), "utf8");
-    const body = renderSkill(id, facts, tokens, raw);
+    const body = renderSkill(id, facts, tokens, raw, sourcePath(entry, "SKILL.md"));
     if (facts.agentSkillNames && (entry.name.length > 64 || !agentSkillName.test(entry.name))) fail(`invalid Agent Skill name ${JSON.stringify(entry.name)} rendered for ${id}`, "Rename the skill using at most 64 lowercase letters, numbers, and single hyphens.");
     return {
       name: entry.name,
@@ -375,7 +399,7 @@ function buildHarness(project: Project, id: HarnessId, facts: HarnessFacts, inst
     const name = entry.name.replace(/\.md$/, "");
     if (facts.agentSkillNames && (name.length > 64 || !agentSkillName.test(name))) fail(`invalid Agent Skill name ${JSON.stringify(name)} synthesized from command ${entry.name} for ${id}`, "Rename the command using at most 64 lowercase letters, numbers, and single hyphens.");
     const raw = readFileSync(join(entry.root, entry.name), "utf8");
-    const rendered = renderText(id, facts, tokens, raw);
+    const rendered = renderText(id, facts, tokens, raw, commandSource(entry).path!);
     const description = frontmatterValue("description", rendered) ?? `Run the ${name} prompt when explicitly invoked.`;
     const hint = frontmatterValue("argument-hint", rendered);
     const extra = [
@@ -403,7 +427,7 @@ function buildHarness(project: Project, id: HarnessId, facts: HarnessFacts, inst
 
   const rulesPath = resolveProjectPath(project, project.mod.roots.rules, "file");
   const rulesRaw = readFileSync(rulesPath, "utf8");
-  const rulesBody = renderText(id, facts, tokens, rulesRaw);
+  const rulesBody = renderText(id, facts, tokens, rulesRaw, project.mod.roots.rules);
   return {
     id,
     facts,

@@ -42,7 +42,6 @@ export type SkillPlan = {
   frontmatter: FrontmatterPlan;
   transformations: Transformations;
   supportFiles: SupportFilePlan[];
-  command: CommandDisposition;
   body: string;
   sourceDir: string;
 };
@@ -55,16 +54,6 @@ export type CommandPlan = {
   transformations: Transformations;
   body: string;
 };
-export type CommandDisposition = {
-  source: "co-located" | "standalone" | "generated" | "none";
-  delivery: "injected" | "file" | "skill" | "none";
-  reason: string;
-  authoring: Source | null;
-  target: { path: string; sha256: string } | null;
-  body: string | null;
-  frontmatter?: FrontmatterPlan;
-  transformations?: Transformations;
-};
 export type FrontmatterPlan = { source: string[]; retained: string[]; omitted: string[]; rendered: string[] };
 export type HarnessPlan = {
   id: HarnessId;
@@ -72,7 +61,7 @@ export type HarnessPlan = {
   profile: {
     argSyntax: string;
     installPaths: HarnessInstallPaths;
-    commandMerge: "inject" | "file" | "skill";
+    commandMerge: "file" | "skill";
     exclusions: Record<string, { code: string; message: string }>;
     excludeCommands: string[];
     commandExclude: string[];
@@ -152,7 +141,6 @@ function frontmatterEnd(lines: string[]) {
   for (let index = 1; index < lines.length; index++) if (lines[index] === "---") return index;
   return null;
 }
-function keyOf(line: string) { return line.split(":", 1)[0] ?? ""; }
 function topLevelKeyOf(line: string) { return line.match(/^([A-Za-z0-9][A-Za-z0-9_-]*):/)?.[1] ?? null; }
 export function frontmatterKeys(text: string) {
   const lines = text.split("\n");
@@ -258,21 +246,6 @@ function renderSkill(id: HarnessId, facts: HarnessFacts, tokens: Record<string, 
 function renderCommand(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, raw: string) {
   return filterFrontmatter(renderText(id, facts, tokens, raw), facts.commandFrontmatter);
 }
-function injectCommand(id: HarnessId, facts: HarnessFacts, tokens: Record<string, string>, skillText: string, commandRaw: string) {
-  const command = renderText(id, facts, tokens, commandRaw);
-  const hint = frontmatterValue("argument-hint", command);
-  const skillLines = skillText.split("\n");
-  const end = frontmatterEnd(skillLines);
-  const existing = end === null ? [] : skillLines.slice(1, end);
-  if (hint && !existing.some((line) => keyOf(line) === "argument-hint") && facts.skillFrontmatter.includes("argument-hint")) existing.push(`argument-hint: ${hint}`);
-  return `---\n${existing.join("\n")}\n---\n\n${bodyOf(command)}\n\n${bodyOf(skillText)}`;
-}
-function router(facts: HarnessFacts, name: string, renderedSkill: string) {
-  const hint = frontmatterValue("argument-hint", renderedSkill);
-  const fm = [`description: Run the ${name} workflow`];
-  if (hint && facts.commandFrontmatter.includes("argument-hint")) fm.push(`argument-hint: ${hint}`);
-  return `---\n${fm.join("\n")}\n---\n\nUse the \`${name}\` skill.\n\n${facts.argSyntax}\n`;
-}
 function walkSupport(root: string, prefix = ""): string[] {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap((entry) => {
     const path = join(prefix, entry.name);
@@ -359,117 +332,69 @@ function buildHarness(project: Project, id: HarnessId, facts: HarnessFacts, inst
   const omittedSkills = { ...entries.setupOmissions, ...Object.fromEntries(omissions.filter((item) => item.kind === "omit-skill").map((item) => [item.selector, { code: omissionCode(item), message: item.reason }])) };
   const omittedCommands = new Set(omissions.filter((item) => item.kind === "omit-command").flatMap((item) => [item.selector, item.selector.endsWith(".md") ? item.selector : `${item.selector}.md`]));
   const selectedEntries = entries.skills.filter((entry) => !omittedSkills[entry.name]);
-  const selectedNames = new Set(selectedEntries.map((entry) => entry.name));
-  const canonicalEntries = selectedEntries.filter((entry) => entry.sourceKind === "canonical");
-  const coLocated = new Map(canonicalEntries.filter((entry) => existsSync(join(entry.root, entry.name, "COMMAND.md"))).map((entry) => [entry.name, entry]));
-  const standaloneBySelector = new Map(entries.commands.map((entry) => [entry.name.replace(/\.md$/, ""), entry]));
-  const inject = facts.commandMerge === "inject";
+  const selectedCommands = entries.commands.filter((entry) => !omittedCommands.has(entry.name));
+  const attached = selectedEntries.find((entry) => entry.sourceKind === "canonical" && existsSync(join(entry.root, entry.name, "COMMAND.md")));
+  if (attached) fail(`skills/${attached.name}/COMMAND.md is not supported`, "A command is a saved prompt, separate from any skill. Move it to commands/ under a name no skill uses, or delete it and invoke the skill directly.");
+  const skillNames = new Set(selectedEntries.map((entry) => entry.name));
+  const clashes = selectedCommands.map((entry) => entry.name.replace(/\.md$/, "")).filter((name) => skillNames.has(name));
+  // Harnesses that deliver commands as skills, or register skills as commands, cannot hold both under one name.
+  if (clashes.length) fail(`commands share a name with skills for ${id}: ${clashes.join(", ")}`, "Rename the command or omit one of them.");
   const commandsAsSkills = facts.commandMerge === "skill";
   const commandRoot = installPaths.commands;
   if (!commandsAsSkills && !commandRoot) fail(`harness ${id} has no command destination`, "Repair its bundled harness facts.");
-  const commands: CommandPlan[] = [];
+  const agentSkillName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-  if (facts.commandMerge === "file") for (const [name, entry] of coLocated) {
-    const fileName = `${name}.md`;
-    if (omittedCommands.has(fileName)) continue;
-    const raw = readFileSync(join(entry.root, name, "COMMAND.md"), "utf8");
-    const body = `${renderCommand(id, facts, tokens, raw)}\nUse the \`${name}\` skill.\n`;
-    commands.push({ name: fileName, source: { kind: "co-located", origin: "canonical", path: `skills/${name}/COMMAND.md` }, delivery: { kind: "file", path: `${commandRoot!}/${fileName}` }, sha256: sha256(body), frontmatter: frontmatterPlan(raw, body), transformations: transformations(id, facts, tokens, raw), body });
-  }
-  for (const entry of entries.commands) {
-    const selector = entry.name.replace(/\.md$/, "");
-    if (omittedCommands.has(entry.name) || commandsAsSkills || coLocated.has(selector) || (inject && selectedNames.has(selector))) continue;
+  const commands: CommandPlan[] = commandsAsSkills ? [] : selectedCommands.map((entry) => {
     const raw = readFileSync(join(entry.root, entry.name), "utf8");
     const body = renderCommand(id, facts, tokens, raw);
-    commands.push({ name: entry.name, source: commandSource(entry), delivery: { kind: "file", path: `${commandRoot!}/${entry.name}` }, sha256: sha256(body), frontmatter: frontmatterPlan(raw, body), transformations: transformations(id, facts, tokens, raw), body });
-  }
-  const covered = new Set([...coLocated.keys(), ...entries.commands.map((entry) => entry.name.replace(/\.md$/, ""))]);
-  if (facts.commandMerge === "file") for (const entry of canonicalEntries) {
-    if (covered.has(entry.name) || omittedCommands.has(entry.name) || omittedCommands.has(`${entry.name}.md`)) continue;
-    const raw = readFileSync(join(entry.root, entry.name, "SKILL.md"), "utf8");
-    const rendered = renderText(id, facts, tokens, raw);
-    if (frontmatterValue("user-invocable", rendered) === "false") continue;
-    const body = router(facts, entry.name, rendered);
-    commands.push({ name: `${entry.name}.md`, source: { kind: "generated", origin: "canonical", path: null }, delivery: { kind: "file", path: `${commandRoot!}/${entry.name}.md` }, sha256: sha256(body), frontmatter: { source: [], retained: frontmatterKeys(body), omitted: [], rendered: frontmatterKeys(body) }, transformations: { fences: [], tokens: [], argSyntax: null, command: ["router-generated"] }, body });
-  }
+    return { name: entry.name, source: commandSource(entry), delivery: { kind: "file", path: `${commandRoot!}/${entry.name}` }, sha256: sha256(body), frontmatter: frontmatterPlan(raw, body), transformations: transformations(id, facts, tokens, raw), body };
+  });
   uniqueByName(commands.map((command) => ({ name: command.name, origin: command.source.origin ?? command.source.kind })), `delivered command for ${id}`);
 
-  const commandFor = (name: string, kind?: string) => commands.find((command) => command.name === `${name}.md` && (!kind || command.source.kind === kind));
-  const agentSkillName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
   const authoredSkills: SkillPlan[] = selectedEntries.map((entry) => {
     const raw = readFileSync(join(entry.root, entry.name, "SKILL.md"), "utf8");
-    const rendered = renderSkill(id, facts, tokens, raw);
-    const standalone = standaloneBySelector.get(entry.name);
-    const co = coLocated.get(entry.name);
-    const commandOmitted = omittedCommands.has(entry.name) || omittedCommands.has(`${entry.name}.md`);
-
-    const coCommandRaw = co && !commandOmitted ? readFileSync(join(entry.root, entry.name, "COMMAND.md"), "utf8") : null;
-    const standaloneCommandRaw = (inject || commandsAsSkills) && standalone && !commandOmitted ? readFileSync(join(standalone.root, standalone.name), "utf8") : null;
-    const commandRaw = coCommandRaw ?? standaloneCommandRaw;
-    if (commandsAsSkills && (entry.name.length > 64 || !agentSkillName.test(entry.name))) fail(`invalid Agent Skill name ${JSON.stringify(entry.name)} rendered for ${id}`, "Rename the skill using at most 64 lowercase letters, numbers, and single hyphens.");
-    const injected = (inject || commandsAsSkills) && commandRaw !== null;
-    const body = injected ? injectCommand(id, facts, tokens, rendered, commandRaw!) : rendered;
-    const delivery = { kind: "file" as const, path: `${installPaths.skills}/${entry.name}/SKILL.md` };
-    const baseTransforms = transformations(id, facts, tokens, raw);
-    if (injected) baseTransforms.command = ["command-injected", "authoring-file-omitted"];
-    const plan: SkillPlan = {
+    const body = renderSkill(id, facts, tokens, raw);
+    if (facts.agentSkillNames && (entry.name.length > 64 || !agentSkillName.test(entry.name))) fail(`invalid Agent Skill name ${JSON.stringify(entry.name)} rendered for ${id}`, "Rename the skill using at most 64 lowercase letters, numbers, and single hyphens.");
+    return {
       name: entry.name,
-      description: frontmatterValue("description", rendered),
+      description: frontmatterValue("description", body),
       origin: entry.origin,
       source: skillSource(entry),
-      delivery,
+      delivery: { kind: "file", path: `${installPaths.skills}/${entry.name}/SKILL.md` },
       sha256: sha256(body),
       frontmatter: frontmatterPlan(raw, body),
-      transformations: baseTransforms,
+      transformations: transformations(id, facts, tokens, raw),
       supportFiles: supportFiles(entry, `${installPaths.skills}/${entry.name}`),
-      command: { source: "none", delivery: "none", reason: "No co-located, standalone, or generated command is delivered for this skill.", authoring: null, target: null, body: null },
       body,
       sourceDir: join(entry.root, entry.name),
     };
-    const coSpec = commandFor(entry.name, "co-located");
-    const standaloneSpec = commandFor(entry.name, "standalone") ?? commandFor(entry.name, "external");
-    const generatedSpec = commandFor(entry.name, "generated");
-    if (co) {
-      const authoring = { origin: "canonical", path: `skills/${entry.name}/COMMAND.md` } as Source;
-      if (injected) plan.command = { source: "co-located", delivery: "injected", reason: "The profile injects the co-located command into the skill artifact.", authoring, target: { path: delivery.path, sha256: plan.sha256 }, body, frontmatter: frontmatterPlan(commandRaw!, renderText(id, facts, tokens, commandRaw!)), transformations: { ...transformations(id, facts, tokens, commandRaw!), command: ["command-injected", "authoring-file-omitted"] } };
-      else if (coSpec) plan.command = { source: "co-located", delivery: "file", reason: "The profile emits the co-located command as a file.", authoring, target: { path: coSpec.delivery.path, sha256: coSpec.sha256 }, body: coSpec.body, frontmatter: coSpec.frontmatter, transformations: coSpec.transformations };
-      else plan.command = { source: "co-located", delivery: "none", reason: "The profile excludes the co-located command file.", authoring, target: null, body: null };
-    } else if (standalone) {
-      const authoring = commandSource(standalone);
-      if (injected) plan.command = { source: "standalone", delivery: "injected", reason: "The profile injects the matching standalone command into the skill artifact.", authoring, target: { path: delivery.path, sha256: plan.sha256 }, body, frontmatter: frontmatterPlan(commandRaw!, renderText(id, facts, tokens, commandRaw!)), transformations: { ...transformations(id, facts, tokens, commandRaw!), command: ["command-injected", "authoring-file-omitted"] } };
-      else if (standaloneSpec) plan.command = { source: "standalone", delivery: "file", reason: "A standalone command with the same selector is emitted as a file.", authoring, target: { path: standaloneSpec.delivery.path, sha256: standaloneSpec.sha256 }, body: standaloneSpec.body, frontmatter: standaloneSpec.frontmatter, transformations: standaloneSpec.transformations };
-      else plan.command = { source: "standalone", delivery: "none", reason: "The profile does not emit the matching standalone command.", authoring, target: null, body: null };
-    } else if (generatedSpec) plan.command = { source: "generated", delivery: "file", reason: "A generated router is the command surface for this user-invocable skill.", authoring: null, target: { path: generatedSpec.delivery.path, sha256: generatedSpec.sha256 }, body: generatedSpec.body, frontmatter: generatedSpec.frontmatter, transformations: generatedSpec.transformations };
-    return plan;
   });
 
-
-  const syntheticSkills: SkillPlan[] = commandsAsSkills ? entries.commands.filter((entry) => {
-    const selector = entry.name.replace(/\.md$/, "");
-    return !selectedNames.has(selector) && !omittedCommands.has(entry.name);
-  }).map((entry) => {
+  // Without saved prompts, a command becomes a skill only the person can invoke.
+  const syntheticSkills: SkillPlan[] = commandsAsSkills ? selectedCommands.map((entry) => {
     const name = entry.name.replace(/\.md$/, "");
-    if (name.length > 64 || !agentSkillName.test(name)) fail(`invalid Agent Skill name ${JSON.stringify(name)} synthesized from command ${entry.name} for ${id}`, "Rename the command using at most 64 lowercase letters, numbers, and single hyphens.");
+    if (facts.agentSkillNames && (name.length > 64 || !agentSkillName.test(name))) fail(`invalid Agent Skill name ${JSON.stringify(name)} synthesized from command ${entry.name} for ${id}`, "Rename the command using at most 64 lowercase letters, numbers, and single hyphens.");
     const raw = readFileSync(join(entry.root, entry.name), "utf8");
     const rendered = renderText(id, facts, tokens, raw);
-    const description = frontmatterValue("description", rendered) ?? `Run the ${name} workflow when explicitly invoked.`;
-    const syntheticFrontmatter = Object.entries(facts.syntheticSkillFrontmatter ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}: ${typeof value === "boolean" ? value : JSON.stringify(value)}`);
-    const body = `---\nname: ${name}\ndescription: ${JSON.stringify(description)}${syntheticFrontmatter.length ? `\n${syntheticFrontmatter.join("\n")}` : ""}\n---\n\n${bodyOf(rendered).replace(/^\n/, "")}`;
-    const delivery = { kind: "file" as const, path: `${installPaths.skills}/${name}/SKILL.md` };
+    const description = frontmatterValue("description", rendered) ?? `Run the ${name} prompt when explicitly invoked.`;
+    const hint = frontmatterValue("argument-hint", rendered);
+    const extra = [
+      ...(hint && facts.skillFrontmatter.includes("argument-hint") ? [`argument-hint: ${JSON.stringify(hint)}`] : []),
+      ...Object.entries(facts.syntheticSkillFrontmatter ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}: ${typeof value === "boolean" ? value : JSON.stringify(value)}`),
+    ];
+    const body = `---\nname: ${name}\ndescription: ${JSON.stringify(description)}${extra.length ? `\n${extra.join("\n")}` : ""}\n---\n\n${bodyOf(rendered).replace(/^\n/, "")}`;
     const commandTransforms = transformations(id, facts, tokens, raw);
     commandTransforms.command = ["command-synthesized-as-skill"];
-    const hash = sha256(body);
     return {
       name,
       description,
       origin: entry.origin,
       source: commandSource(entry),
-      delivery,
-      sha256: hash,
+      delivery: { kind: "file", path: `${installPaths.skills}/${name}/SKILL.md` },
+      sha256: sha256(body),
       frontmatter: frontmatterPlan(raw, body),
       transformations: commandTransforms,
       supportFiles: Object.entries(facts.syntheticSkillFiles ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([path, generatedBody]) => ({ source: { path: null }, delivery: { kind: "file", path: `${installPaths.skills}/${name}/${path}` }, sha256: sha256(generatedBody), copied: "generated", markup: false, sourcePath: null, generatedBody, relativePath: path })),
-      command: { source: "standalone", delivery: "skill", reason: "The profile delivers the standalone command as a skill.", authoring: commandSource(entry), target: { path: delivery.path, sha256: hash }, body, frontmatter: frontmatterPlan(raw, body), transformations: commandTransforms },
       body,
       sourceDir: entry.root,
     };
@@ -512,7 +437,7 @@ export function schemaFor(project: Project) {
     markup: ["{{token}}", "{{#harness}}", "{{^harness}}", "{{/}}", "$@"],
     harnesses: mapHarnesses((id) => {
       const value = facts[id];
-      return { argSyntax: value.argSyntax, tokens: project.mod.harnesses[id]?.tokens ?? {}, skillFrontmatter: value.skillFrontmatter, commandFrontmatter: value.commandFrontmatter, commandMerge: value.commandMerge };
+      return { argSyntax: value.argSyntax, tokens: project.mod.harnesses[id]?.tokens ?? {}, skillFrontmatter: value.skillFrontmatter, commandFrontmatter: value.commandFrontmatter, commandMerge: value.commandMerge, agentSkillNames: value.agentSkillNames === true };
     }),
   };
 }

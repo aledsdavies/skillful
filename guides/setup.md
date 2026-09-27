@@ -14,7 +14,6 @@ setup work-mac (
 
   claude (
     skills .claude2/skills
-    commands .claude2/commands
   )
 )
 ```
@@ -29,7 +28,7 @@ One-off `install --harness` always uses home paths, with `--root` as relocation.
 
 Use repeated `only-skill <name>` or repeated `omit-skill <name> <reason>`, never
 both. Selection names are exact. Omitting a skill also removes its support files
-and generated or co-located command from every output in the setup.
+from every output in the setup. Omit a command with `omit-command` in a harness block.
 
 ```bash
 skillful list setups

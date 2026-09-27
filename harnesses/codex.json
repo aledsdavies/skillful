@@ -8,5 +8,6 @@
   "skillFrontmatter": ["name", "description", "license", "compatibility", "metadata", "allowed-tools"],
   "commandFrontmatter": ["description", "argument-hint"],
   "commandMerge": "skill",
+  "agentSkillNames": true,
   "syntheticSkillFiles": { "agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n" }
 }

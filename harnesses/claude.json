@@ -1,11 +1,12 @@
 {
   "name": "claude",
   "installPaths": {
-    "home": { "skills": ".claude/skills", "commands": ".claude/commands" },
-    "project": { "skills": ".claude/skills", "commands": ".claude/commands" }
+    "home": { "skills": ".claude/skills" },
+    "project": { "skills": ".claude/skills" }
   },
   "argSyntax": "$ARGUMENTS",
   "skillFrontmatter": ["name", "description", "when_to_use", "argument-hint", "arguments", "disable-model-invocation", "user-invocable", "allowed-tools", "disallowed-tools", "model", "effort", "context", "hooks", "paths", "shell", "license", "compatibility", "metadata"],
   "commandFrontmatter": ["description", "when_to_use", "argument-hint", "disable-model-invocation", "user-invocable", "allowed-tools"],
-  "commandMerge": "inject"
+  "commandMerge": "skill",
+  "syntheticSkillFrontmatter": { "disable-model-invocation": true }
 }

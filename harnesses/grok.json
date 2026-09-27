@@ -7,5 +7,5 @@
   "argSyntax": "$ARGUMENTS",
   "skillFrontmatter": ["name", "description", "when-to-use", "paths", "allowed-tools", "argument-hint", "user-invocable", "disable-model-invocation", "model", "effort", "license", "compatibility", "metadata"],
   "commandFrontmatter": ["description", "when-to-use", "allowed-tools", "argument-hint", "user-invocable", "disable-model-invocation", "model", "effort"],
-  "commandMerge": "inject"
+  "commandMerge": "file"
 }

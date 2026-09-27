@@ -12,8 +12,9 @@ serve several harnesses, or when you compose another tree with your own.
 The CLI is the product. A project is `skill.mod`, optional `skill.lock`, and
 the files under `skills/`, `commands/`, and `rules/`. One `SKILL.md` is
 rewritten per harness: tokens from `skill.mod`, harness fences, argument
-syntax, and the frontmatter that harness accepts. Only `install` writes live
-destinations.
+syntax, and the frontmatter that harness accepts. A command is a saved prompt:
+a prompt or command file where the harness has them, otherwise a skill only the
+person can invoke. Only `install` writes live destinations.
 
 Nix is the other way to run the same project. It consumes the lock and the
 renderer so the tree is Nix-compatible from the first pin.

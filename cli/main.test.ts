@@ -19,6 +19,7 @@ describe("project CLI", () => {
     expect(stdout).toContain("Author agent skills once, render them per harness.");
     expect(stdout).toContain("skillful skills tree");
     expect(stdout).toContain("skillful <command> --help");
+    expect(stdout).toContain("A command is a saved prompt the person runs by name, separate from any skill");
     expect(stdout).toContain("init [options]");
     expect(stdout).toContain("render [options]");
     expect(stdout).toContain("install [options]");
@@ -149,7 +150,6 @@ setup work-mac (
 
   claude (
     skills .claude2/skills
-    commands .claude2/commands
   )
 )
 `);

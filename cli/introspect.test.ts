@@ -46,7 +46,9 @@ describe("top-level introspection", () => {
     expect(schema.schema.harnesses.opencode.commandMerge).toBe("file");
     expect(schema.schema.harnesses.codex.commandMerge).toBe("skill");
     expect(schema.schema.harnesses.cursor.commandMerge).toBe("skill");
-    expect(schema.schema.harnesses.grok.commandMerge).toBe("inject");
+    expect(schema.schema.harnesses.grok.commandMerge).toBe("file");
+    expect(schema.schema.harnesses.codex.agentSkillNames).toBe(true);
+    expect(schema.schema.harnesses.claude.agentSkillNames).toBe(false);
 
     const compared = json(run(project, "diff", "example", "--format", "json"));
     expect(compared.harnesses.claude.status).toBe("identical");

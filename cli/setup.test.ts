@@ -31,7 +31,6 @@ setup work-mac (
 
   claude (
     skills .claude2/skills
-    commands .claude2/commands
   )
 )`;
 

@@ -13,7 +13,8 @@ export type HarnessFacts = {
   argSyntax: string;
   skillFrontmatter: string[];
   commandFrontmatter: string[];
-  commandMerge: "inject" | "file" | "skill";
+  commandMerge: "file" | "skill";
+  agentSkillNames?: boolean;
   syntheticSkillFiles?: Record<string, string>;
   syntheticSkillFrontmatter?: Record<string, string | boolean>;
 };
@@ -39,12 +40,13 @@ function validate(candidate: unknown, path: string): HarnessFacts {
   const value = candidate as Record<string, unknown>;
   const name = value.name;
   if (typeof name !== "string" || !(HARNESS_IDS as readonly string[]).includes(name)) throw new HarnessError(`invalid harness facts ${path}: unknown name`, "Use one public harness identifier.");
-  if (typeof value.argSyntax !== "string" || (value.commandMerge !== "inject" && value.commandMerge !== "file" && value.commandMerge !== "skill")) throw new HarnessError(`invalid harness facts ${path}: argSyntax or commandMerge is invalid`, "Repair the bundled harness JSON before using skillful.");
+  if (typeof value.argSyntax !== "string" || (value.commandMerge !== "file" && value.commandMerge !== "skill")) throw new HarnessError(`invalid harness facts ${path}: argSyntax or commandMerge is invalid`, "Repair the bundled harness JSON before using skillful.");
   const installPaths = value.installPaths;
   if (!installPaths || typeof installPaths !== "object" || Array.isArray(installPaths)) throw new HarnessError(`invalid harness facts ${path}: installPaths must be an object`, "Repair the bundled harness JSON before using skillful.");
   const profiles = installPaths as Record<string, unknown>;
   validateInstallPaths(profiles.home, path, "home", value.commandMerge);
   validateInstallPaths(profiles.project, path, "project", value.commandMerge);
+  if (value.agentSkillNames !== undefined && typeof value.agentSkillNames !== "boolean") throw new HarnessError(`invalid harness facts ${path}: agentSkillNames must be a boolean`, "Repair the bundled harness JSON before using skillful.");
   const synthetic = value.syntheticSkillFiles;
   if (synthetic !== undefined && (!synthetic || typeof synthetic !== "object" || Array.isArray(synthetic) || Object.entries(synthetic).some(([file, body]) => !file || file.startsWith("/") || file.split("/").includes("..") || typeof body !== "string"))) throw new HarnessError(`invalid harness facts ${path}: syntheticSkillFiles is invalid`, "Use safe relative file names with string contents.");
   const syntheticFrontmatter = value.syntheticSkillFrontmatter;

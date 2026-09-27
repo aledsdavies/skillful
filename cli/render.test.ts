@@ -33,16 +33,18 @@ describe("TypeScript renderer", () => {
     expect(claude).toContain("Claude keeps this line.");
     expect(claude).not.toContain("Other harnesses keep this line.");
     expect(claude).toContain("$ARGUMENTS");
-    expect(claude.indexOf("Use the example skill with:")).toBeLessThan(claude.indexOf("# Example"));
-    expect(claude).toContain("argument-hint: [input]");
-    expect(existsSync(join(project, "rendered", "claude", "commands", "example.md"))).toBe(false);
+    expect(existsSync(join(project, "rendered", "claude", "commands", "standalone.md"))).toBe(false);
+    const claudePrompt = text(join(project, "rendered", "claude", "skills", "standalone", "SKILL.md"));
+    expect(claudePrompt).toContain("disable-model-invocation: true");
+    expect(claudePrompt).toContain("This command accepts: $ARGUMENTS");
 
     const pi = text(join(project, "rendered", "pi", "skills", "example", "SKILL.md"));
     expect(pi).toContain("Pi");
     expect(pi).toContain("Other harnesses keep this line.");
     expect(pi).not.toContain("Claude keeps this line.");
     expect(pi).toContain("Arguments: $@");
-    expect(text(join(project, "rendered", "pi", "commands", "example.md"))).toContain("Use the `example` skill.");
+    expect(text(join(project, "rendered", "pi", "commands", "standalone.md"))).toContain("This command accepts: $@");
+    expect(existsSync(join(project, "rendered", "pi", "commands", "example.md"))).toBe(false);
     expect(text(join(project, "rendered", "pi", "rules.md"))).toContain("This line demonstrates rules rendering.");
     expect(text(join(project, "rendered", "pi", "skills", "example", "references", "guide.md"))).toContain("copied without rendering");
   });
@@ -79,7 +81,6 @@ harness pi (
     const renderedSkill = text(join(project, "rendered", "codex", "skills", "example", "SKILL.md"));
     expect(renderedSkill).toContain("This resource is rendered for Codex");
     expect(renderedSkill).toContain("Codex keeps this line.");
-    expect(renderedSkill).toContain("Use the example skill with:");
     expect(renderedSkill).toContain("the user's request that invoked this skill");
     const standalone = text(join(project, "rendered", "codex", "skills", "standalone", "SKILL.md"));
     expect(standalone).toContain("name: standalone");
@@ -111,40 +112,27 @@ harness pi (
     const renderedSkill = text(join(project, "rendered", "grok", "skills", "example", "SKILL.md"));
     expect(renderedSkill).toContain("This resource is rendered for Grok");
     expect(renderedSkill).toContain("Grok keeps this line.");
-    expect(renderedSkill).toContain("Use the example skill with: $ARGUMENTS");
     expect(existsSync(join(project, "rendered", "grok", "commands", "example.md"))).toBe(false);
     expect(text(join(project, "rendered", "grok", "commands", "standalone.md"))).toContain("This command accepts: $ARGUMENTS");
     expect(text(join(project, "rendered", "grok", "rules.md"))).toContain("# Shared rules");
   });
 
-  test("injects matching standalone Grok commands and preserves path scoping", () => {
+  test("refuses a command attached to a skill folder", () => {
     const { project } = fixture();
-    rmSync(join(project, "skills", "example", "COMMAND.md"));
-    writeFileSync(join(project, "commands", "example.md"), "---\ndescription: Matching command\n---\n\nMatching Grok command: $@\n");
-    writeFileSync(join(project, "skills", "example", "SKILL.md"), "---\nname: example\ndescription: Scoped example\npaths:\n  - src/**\n---\n\n# Example\n");
+    writeFileSync(join(project, "skills", "example", "COMMAND.md"), "---\ndescription: Attached\n---\n\nRun it: $@\n");
 
-    renderProject(discoverProject({ project }), { harnesses: ["grok"] });
-
-    const rendered = text(join(project, "rendered", "grok", "skills", "example", "SKILL.md"));
-    expect(rendered).toContain("paths:\n  - src/**");
-    expect(rendered).toContain("Matching Grok command: $ARGUMENTS");
-    expect(existsSync(join(project, "rendered", "grok", "commands", "example.md"))).toBe(false);
+    expect(() => renderProject(discoverProject({ project }), { harnesses: ["pi"] })).toThrow("skills/example/COMMAND.md is not supported");
   });
 
-  test("prefers a co-located command when a standalone command has the same name", () => {
+  test("refuses a command that shares its name with a skill", () => {
     const { project } = fixture();
-    writeFileSync(join(project, "commands", "example.md"), "---\ndescription: Duplicate source\n---\n\nStandalone command.\n");
+    writeFileSync(join(project, "commands", "example.md"), "---\ndescription: Same name\n---\n\nRun it: $@\n");
 
-    renderProject(discoverProject({ project }), { harnesses: ["claude"] });
-
-    const rendered = text(join(project, "rendered", "claude", "skills", "example", "SKILL.md"));
-    expect(rendered).toContain("Use the example skill with: $ARGUMENTS");
-    expect(rendered).not.toContain("Standalone command.");
+    expect(() => renderProject(discoverProject({ project }), { harnesses: ["pi"] })).toThrow("commands share a name with skills for pi: example");
   });
 
   test("renders harness markup before parsing frontmatter", () => {
     const { project } = fixture();
-    rmSync(join(project, "skills", "example", "COMMAND.md"));
     writeFileSync(join(project, "skills", "example", "SKILL.md"), `---
 name: example
 description: >-
@@ -170,7 +158,7 @@ Body.
     expect(claude).toContain("disable-model-invocation: true");
     expect(opencode).not.toContain("disable-model-invocation");
     expect(existsSync(join(project, "rendered", "opencode", "commands", "example.md"))).toBe(false);
-    expect(existsSync(join(project, "rendered", "pi", "commands", "example.md"))).toBe(true);
+    expect(existsSync(join(project, "rendered", "pi", "commands", "example.md"))).toBe(false);
   });
 
   test("validates Agent Skill names only for selected harnesses", () => {
@@ -186,6 +174,7 @@ setup pi-only (
     const resolved = discoverProject({ project });
 
     expect(() => renderProject(resolved, { harnesses: ["cursor"] })).toThrow("invalid Agent Skill name");
+    expect(() => renderProject(resolved, { harnesses: ["claude"] })).not.toThrow();
     expect(() => renderProject(resolved, { setup: "pi-only" })).not.toThrow();
   });
 

@@ -8,5 +8,6 @@
   "skillFrontmatter": ["name", "description", "paths", "disable-model-invocation", "icon", "color", "metadata"],
   "commandFrontmatter": ["name", "description"],
   "commandMerge": "skill",
+  "agentSkillNames": true,
   "syntheticSkillFrontmatter": { "disable-model-invocation": true }
 }

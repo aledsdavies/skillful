@@ -14,7 +14,7 @@ function emit(value: unknown, format: OutputFormat, text: () => string) { consol
 function publicSkill(skill: SkillPlan, rendered: boolean) {
   const { sourceDir: _sourceDir, ...value } = skill;
   const supportFiles = value.supportFiles.map(({ sourcePath: _sourcePath, generatedBody: _generatedBody, relativePath: _relativePath, ...support }) => support);
-  return rendered ? { ...value, supportFiles } : { ...value, supportFiles, body: undefined, command: { ...value.command, body: undefined } };
+  return rendered ? { ...value, supportFiles } : { ...value, supportFiles, body: undefined };
 }
 export function manifestCommand(project: Project, options: ResolveOptions & { harnesses?: HarnessId[] | undefined; format: OutputFormat }) {
   const plan = resolvePlan(project, options);

@@ -6,6 +6,10 @@ people's skill trees: github:, git:, and path: references.
 Use skillful when one tree must serve several harnesses, or when you compose
 another tree with your own. Plain files are enough for a single harness.
 
+A command is a saved prompt the person runs by name, separate from any skill:
+a prompt or command file where the harness has them, otherwise a skill only the
+person can invoke. See: skillful skills show author.
+
 Only install writes live harness destinations. add and update resolve revisions;
 fetch retrieves exact pins. check, inspect, render, and install never resolve.
 

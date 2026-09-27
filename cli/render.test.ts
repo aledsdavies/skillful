@@ -294,8 +294,37 @@ metadata:
     renderProject(resolved, { harnesses: ["pi"] });
     const before = text(join(project, "rendered", "pi", "skills", "example", "SKILL.md"));
     writeFileSync(join(project, "skills", "example", "SKILL.md"), "---\nname: example\n---\n{{missing}}\n");
-    expect(() => renderProject(discoverProject({ project }), { harnesses: ["pi"] })).toThrow("unresolved {{missing}}");
+    expect(() => renderProject(discoverProject({ project }), { harnesses: ["pi"] })).toThrow("skills/example/SKILL.md:4: unknown token {{missing}} for pi");
     expect(text(join(project, "rendered", "pi", "skills", "example", "SKILL.md"))).toBe(before);
+  });
+
+  test("shows markup inside code as written and substitutes it elsewhere", () => {
+    const { project } = fixture();
+    writeFileSync(join(project, "skills", "example", "SKILL.md"), [
+      "---", "name: example", "description: Code example", "---", "",
+      "Write a fence as `{{#claude}}` on its own line; `$@` marks the arguments.",
+      "", "```text", "{{#pi}}", "echo $@", "{{/}}", "```", "",
+      "Arguments: $@", "",
+    ].join("\n"));
+
+    renderProject(discoverProject({ project }), { harnesses: ["claude"] });
+
+    const rendered = text(join(project, "rendered", "claude", "skills", "example", "SKILL.md"));
+    expect(rendered).toContain("Write a fence as `{{#claude}}` on its own line; `$@` marks the arguments.");
+    expect(rendered).toContain("```text\n{{#pi}}\necho $@\n{{/}}\n```");
+    expect(rendered).toContain("Arguments: $ARGUMENTS");
+  });
+
+  test("names the file and line of markup it cannot render", () => {
+    const cases = [
+      ["An inline {{#pi}} fence.", "skills/example/SKILL.md:6: renderer fence {{#pi}} is not on a line of its own"],
+      ["An {{unknown}} token.", "skills/example/SKILL.md:6: unknown token {{unknown}} for pi"],
+    ] as const;
+    for (const [line, error] of cases) {
+      const { project } = fixture();
+      writeFileSync(join(project, "skills", "example", "SKILL.md"), `---\nname: example\ndescription: Broken\n---\n\n${line}\n`);
+      expect(() => renderProject(discoverProject({ project }), { harnesses: ["pi"] })).toThrow(error);
+    }
   });
 
   test("dry-run writes nothing and managed rerenders remove stale support files", () => {
